@@ -685,7 +685,261 @@ Session management
 Password encoding
 Integration with OAuth2, LDAP, JWT, etc.
 
-2. How does Spring Security work internally?
+                     
+               -------------------------------
+request -->    |                              |
+               |                              |
+               |           Filter chain       |   -----> application
+               |                              |
+response <---  |                              |
+               --------------------------------
+                               |
+                               |
+                       Authentication Filter
+    security context
+                       Authentication manager   --> Authentication provider->  --> Password Encoder   --> UserDetail Service   -->  Database
+                        authenticate()                matches()                                            loadByUserName()           findByUserName()           
+                                                                                                                      
+
+
+In Spring Security, filters play a major role in processing requests for authentication and authorization. Filters are part of the Servlet Filter Chain, and Spring Security adds its own filters at specific points in this chain.
+
+✅ Overview of Spring Security Filters
+🔁 What is a Filter?
+A filter is a component that intercepts HTTP requests and responses. In Spring Security, filters are used to:
+Authenticate users
+Authorize access to endpoints
+Handle login/logout
+Manage security context
+Protect against CSRF, CORS, etc.
+
+🔐 Key Authentication Filters in Spring Security
+1. UsernamePasswordAuthenticationFilter
+Used for form-based login.
+Intercepts POST requests to /login (default).
+Extracts username and password and authenticates using AuthenticationManager.
+If successful, creates a UsernamePasswordAuthenticationToken.
+
+👉 Commonly customized or replaced when implementing JWT authentication.
+
+2. BasicAuthenticationFilter
+Handles HTTP Basic Auth.
+Extracts credentials from the Authorization header (base64 encoded).
+Uses AuthenticationManager to authenticate.
+
+3. BearerTokenAuthenticationFilter (Spring Security 5.2+)
+For OAuth2 Resource Servers using Bearer tokens (e.g., JWT).
+Extracts token from Authorization: Bearer <token> header.
+Delegates to AuthenticationManager.
+
+4. SecurityContextPersistenceFilter
+Loads and saves the SecurityContext (which holds authentication details).
+First filter in the Spring Security chain.
+Ensures that SecurityContext is available throughout the request.
+
+5. ExceptionTranslationFilter
+Handles exceptions from downstream filters like AccessDeniedException and AuthenticationException.
+Sends appropriate HTTP responses (e.g., 403, 401) or redirects to login page.
+
+6. FilterSecurityInterceptor
+The last filter in the chain.
+Enforces access control based on roles/authorities.
+Uses AccessDecisionManager.
+
+7. Custom Filters
+You can create your own filter by extending OncePerRequestFilter or GenericFilterBean.
+Example use-cases:
+JWT parsing
+Logging requests
+Custom token-based authentication
+
+🔄 Filter Chain Order
+Spring Security maintains a strict filter order, defined in SecurityFilterChain. Here's a simplified version of the default order:
+SecurityContextPersistenceFilter
+→ UsernamePasswordAuthenticationFilter
+→ BasicAuthenticationFilter
+→ BearerTokenAuthenticationFilter
+→ ExceptionTranslationFilter
+→ FilterSecurityInterceptor
+You can inspect the order using:
+
+@EnableWebSecurity
+public class SecurityConfig {
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+            .addFilterBefore(myFilter, UsernamePasswordAuthenticationFilter.class);
+        return http.build();
+    }
+}
+🛠️ Custom Authentication Filter Example
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
+    @Override
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    FilterChain filterChain)
+                                    throws ServletException, IOException {
+        String token = getJwtFromRequest(request);
+
+        if (StringUtils.hasText(token) && validateToken(token)) {
+            UsernamePasswordAuthenticationToken auth = getAuthentication(token);
+            SecurityContextHolder.getContext().setAuthentication(auth);
+        }
+
+        filterChain.doFilter(request, response);
+    }
+}
+
+AuthenticationManager is a core interface in Spring Security used to process authentication requests.
+When a user attempts to log in (via form login, Basic Auth, JWT, etc.), Spring Security passes the authentication request to the AuthenticationManager, which:
+Verifies the user's credentials.
+Returns a fully authenticated Authentication object (if successful).
+Throws an exception if authentication fails.
+🧱 AuthenticationManager Interface
+public interface AuthenticationManager {
+    Authentication authenticate(Authentication authentication) throws AuthenticationException;
+}
+Parameters:
+Authentication authentication: An object containing login credentials (e.g., username and password).
+Returns: An Authentication object with credentials and authorities (roles).
+
+🔄 Authentication Flow
+User Request → Filter (e.g., UsernamePasswordAuthenticationFilter)
+            → AuthenticationManager
+            → AuthenticationProvider(s)
+            → UserDetailsService
+            → UserDetails (User info from DB)
+            → Successful or Failed Authentication
+🧠 How Spring Security Uses It
+Spring Boot auto-configures an AuthenticationManager and links it to:
+UserDetailsService
+AuthenticationProvider (like DaoAuthenticationProvider)
+
+🛠️ Defining Custom AuthenticationManager
+You can define a custom AuthenticationManager using a @Bean:
+@Configuration
+public class SecurityConfig {
+    @Bean
+    public AuthenticationManager authenticationManager(HttpSecurity http) throws Exception {
+        return http.getSharedObject(AuthenticationManagerBuilder.class)
+                   .userDetailsService(customUserDetailsService)
+                   .passwordEncoder(passwordEncoder())
+                   .and()
+                   .build();
+    }
+}
+🧩 AuthenticationManagerBuilder
+Used to configure the AuthenticationManager. Common configurations:
+In-Memory users
+JDBC Authentication
+LDAP
+
+Custom UserDetailsService
+@Autowired
+public void configure(AuthenticationManagerBuilder auth) throws Exception {
+    auth.userDetailsService(myUserDetailsService)
+        .passwordEncoder(passwordEncoder());
+}
+🔐 Custom AuthenticationManager for JWT or OAuth
+If you're building a custom login system (e.g., using JWT), you can build and inject your own AuthenticationManager:
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
+    private final AuthenticationManager authenticationManager;
+    public JwtAuthenticationFilter(AuthenticationManager authenticationManager) {
+        this.authenticationManager = authenticationManager;
+    }
+
+    @Override
+    protected void doFilterInternal(...) {
+        Authentication auth = new UsernamePasswordAuthenticationToken(username, password);
+        Authentication result = authenticationManager.authenticate(auth);
+        SecurityContextHolder.getContext().setAuthentication(result);
+    }
+}
+
+ What is AuthenticationProvider?
+AuthenticationProvider is an interface in Spring Security that performs the actual authentication logic. It's used by the AuthenticationManager to verify credentials like username/password or a token.
+Each AuthenticationProvider supports a specific type of Authentication (e.g., UsernamePasswordAuthenticationToken, JwtAuthenticationToken, etc.)
+
+📘 Interface Definition
+public interface AuthenticationProvider {
+    Authentication authenticate(Authentication authentication) throws AuthenticationException;
+    boolean supports(Class<?> authentication);
+}
+🔸 Methods:
+authenticate(): Performs authentication and returns a fully authenticated object.
+supports(): Specifies whether this provider supports the given Authentication type.
+
+🧠 How It Works
+
+Request → AuthenticationManager
+        → List<AuthenticationProvider>
+        → Match found (supports(auth))
+        → authenticate()
+        → Returns authenticated token OR throws exception
+🔐 Default Implementation
+The most common implementation is:
+
+✅ DaoAuthenticationProvider
+Uses UserDetailsService to load user info from DB.
+Verifies password using PasswordEncoder.
+DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
+provider.setUserDetailsService(userDetailsService);
+provider.setPasswordEncoder(passwordEncoder);
+🛠️ Custom AuthenticationProvider Example
+You might create a custom AuthenticationProvider when implementing:
+
+JWT token authentication
+
+OTP-based login
+
+External system-based authentication
+
+🧾 Example: Custom Provider for Username + SecretKey
+
+@Component
+public class CustomAuthenticationProvider implements AuthenticationProvider {
+
+    @Autowired
+    private MyUserDetailsService userDetailsService;
+
+    @Override
+    public Authentication authenticate(Authentication authentication)
+            throws AuthenticationException {
+
+        String username = authentication.getName();
+        String password = authentication.getCredentials().toString();
+
+        UserDetails user = userDetailsService.loadUserByUsername(username);
+
+        if (!password.equals("expectedSecret")) {
+            throw new BadCredentialsException("Invalid secret");
+        }
+
+        return new UsernamePasswordAuthenticationToken(
+                user.getUsername(), null, user.getAuthorities());
+    }
+
+    @Override
+    public boolean supports(Class<?> auth) {
+        return UsernamePasswordAuthenticationToken.class.isAssignableFrom(auth);
+    }
+}
+🔗 Registering Custom AuthenticationProvider
+
+@Configuration
+public class SecurityConfig {
+
+    @Autowired
+    private CustomAuthenticationProvider customAuthProvider;
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        AuthenticationManagerBuilder auth = http.getSharedObject(AuthenticationManagerBuilder.class);
+        auth.authenticationProvider(customAuthProvider);
+        return http.build();
+    }
+}
+3. How does Spring Security work internally?
 Answer:
 Spring Security uses a filter chain (DelegatingFilterProxy) to intercept incoming HTTP requests. Key filters in the chain include:
 UsernamePasswordAuthenticationFilter – for form-based login
@@ -694,23 +948,23 @@ SecurityContextPersistenceFilter – loads/stores security context
 ExceptionTranslationFilter – handles security-related exceptions
 Authentication is performed using AuthenticationManager, and decisions are based on user roles and access rules defined in configuration.
 
-3. What is the difference between Authentication and Authorization?
+4. What is the difference between Authentication and Authorization?
 Answer:
 Concept	                Description
 Authentication	        Who you are (e.g., verifying username/password)
 Authorization          	What you can do (e.g., access control based on roles)
 
-4. What are the different ways to configure Spring Security?
+5. What are the different ways to configure Spring Security?
 Answer:
 XML Configuration (legacy)
 Java-based Configuration using @EnableWebSecurity and WebSecurityConfigurerAdapter (till Spring Security 5.7)
 Lambda DSL style (from Spring Security 5.4+)
 
-5. Explain WebSecurityConfigurerAdapter and why it's deprecated.
+6. Explain WebSecurityConfigurerAdapter and why it's deprecated.
 Answer:
 WebSecurityConfigurerAdapter was used to configure custom security logic by overriding configure(HttpSecurity http) method. From Spring Security 5.7 onwards, it’s deprecated in favor of a component-based approach and builder-style SecurityFilterChain beans for better flexibility and readability.
 
-6. What is CSRF and how does Spring Security handle it?
+7. What is CSRF and how does Spring Security handle it?
 Answer:
 Cross-Site Request Forgery (CSRF) is an attack where a user is tricked into submitting malicious requests. Spring Security protects against CSRF by:
 Generating a CSRF token for each session.
@@ -719,7 +973,7 @@ You can disable it with:
 http.csrf().disable();
 But it should only be done for APIs (especially stateless).
 
-7. What is the difference between Basic Authentication and Form Login?
+8. What is the difference between Basic Authentication and Form Login?
 Answer:
 Feature                          	Basic Auth	                                  Form Login
 UI	                              Browser popup	                                Custom HTML login form
@@ -727,7 +981,7 @@ Credential handling	              Sent with every request (Base64)	            S
 Use Case	                        APIs or internal systems	                    Web applications
 Security	                        Less secure (unless over HTTPS)	              More flexible with customization
 
-8. How do you secure REST APIs using Spring Security?
+9. How do you secure REST APIs using Spring Security?
 Answer:
 Use stateless sessions (sessionCreationPolicy.STATELESS)
 Prefer JWT for authentication
